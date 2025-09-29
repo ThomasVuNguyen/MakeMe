@@ -1,13 +1,33 @@
 # MakeMe
 Create 3D files in the CLI with Small Language Model
 
+![Demo](demo.gif)
+
+
+# Features
+
+- **Text-to-3D Generation**: Enter 2-5 words to create ASCII art objects
+- **STL File Viewer**: Type 'pikachu' to view and interact with real 3D STL files
+- **Auto-rotation**: Models rotate automatically with pause/resume controls
+- **Responsive Design**: 3D viewport automatically fits your terminal size
+- **Interactive Controls**: Manual rotation, wireframe/solid toggle, and more
+
+# How to Run
+
+```bash
+# Build the application
+go build -o makeme .
+
+# Run it
+./makeme
+```
 
 # How it works
 
-A text prompt box.
-User put in 2-5 words to describe a thing, like 'a duck'
-model process it.
-a 3d image of said object shown, user then can either press 'i like it' or 'try again'
+- Enter 2-5 words to describe an object (e.g., 'a duck', 'a car')
+- The app generates ASCII art representation
+- Special: Type 'pikachu' to load and view the included STL file
+- Use keyboard controls to interact with the 3D model
 
 # Libraries to use (all CLI by Charm.sh)
 Bubble Tea: https://github.com/charmbracelet/bubbletea
