@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +17,8 @@ type state int
 
 const (
 	stateInput state = iota
-	stateDisplay
+	stateGenerating
+	stateConverting
 	stateSTLView
 )
 
@@ -24,6 +27,7 @@ type model struct {
 	textInput    textinput.Model
 	prompt       string
 	object3D     string
+	selectedObject string
 	width        int
 	height       int
 	stlModel     *STLModel
@@ -32,6 +36,7 @@ type model struct {
 	renderStyle  string
 	autoRotate   bool
 	rotationSpeed float64
+	generatingMsg string
 	err          error
 }
 
@@ -81,17 +86,14 @@ var (
 
 func initialModel() model {
 	ti := textinput.New()
-	ti.Placeholder = "a duck, a car, a flower..."
+	ti.Placeholder = "a cat, a box, a house, a cake..."
 	ti.Focus()
 	ti.CharLimit = 50
 	ti.Width = 46
 
-	stlModel, _ := ParseSTL("pikachu.stl")
-
 	return model{
 		state:         stateInput,
 		textInput:     ti,
-		stlModel:      stlModel,
 		renderStyle:   "solid",
 		autoRotate:    true,
 		rotationSpeed: 0.03,
@@ -124,43 +126,56 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case generateObjectMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = stateInput
+			m.textInput.Focus()
+			return m, textinput.Blink
+		}
+		
+		// Load the generated STL
+		stlModel, err := ParseSTL(msg.stlPath)
+		if err != nil {
+			m.err = err
+			m.state = stateInput
+			m.textInput.Focus()
+			return m, textinput.Blink
+		}
+		
+		m.stlModel = stlModel
+		m.stlModel.Name = m.selectedObject
+		m.state = stateSTLView
+		m.rotX, m.rotY, m.rotZ = 0, 0, 0
+		m.autoRotate = true
+		return m, tickCmd()
+	
 	case tea.KeyMsg:
 		switch m.state {
 		case stateInput:
 			switch msg.Type {
 			case tea.KeyEnter:
-				words := strings.Fields(m.textInput.Value())
-				if strings.ToLower(m.textInput.Value()) == "pikachu" && m.stlModel != nil {
-					m.prompt = m.textInput.Value()
-					m.state = stateSTLView
-					m.rotX, m.rotY, m.rotZ = 0, 0, 0
-					m.autoRotate = true
+				objectName := strings.TrimSpace(m.textInput.Value())
+				if objectName != "" {
+					m.selectedObject = objectName
+					m.state = stateGenerating
+					m.generatingMsg = "Generating " + objectName + "..."
 					m.textInput.Reset()
-					return m, tickCmd()
-				} else if len(words) >= 2 && len(words) <= 5 {
-					m.prompt = m.textInput.Value()
-					m.object3D = generate3D(m.prompt)
-					m.state = stateDisplay
-					m.textInput.Reset()
-					return m, nil
+					return m, generateObjectCmd(objectName)
 				}
 			case tea.KeyCtrlC, tea.KeyEsc:
 				return m, tea.Quit
 			}
 
-		case stateDisplay:
+		case stateGenerating:
 			switch msg.String() {
-			case "m", "M":
-				m.state = stateInput
-				m.textInput.Focus()
-				return m, textinput.Blink
-			case "t", "T", "enter":
-				words := strings.Fields(m.prompt)
-				if len(words) >= 2 && len(words) <= 5 {
-					m.object3D = generate3D(m.prompt)
-					return m, nil
-				}
-			case "q", "ctrl+c", "esc":
+			case "ctrl+c", "esc":
+				return m, tea.Quit
+			}
+		
+		case stateConverting:
+			switch msg.String() {
+			case "ctrl+c", "esc":
 				return m, tea.Quit
 			}
 
@@ -229,30 +244,31 @@ func (m model) View() string {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🎨 MakeMe - 3D Object Creator") + "\n\n")
+	
+	// Display error if any
+	if m.err != nil {
+		errorStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF5555")).
+			Bold(true)
+		s.WriteString(errorStyle.Render("Error: " + m.err.Error()) + "\n\n")
+	}
 
 	switch m.state {
 	case stateInput:
-		s.WriteString(promptStyle.Render("Describe an object (2-5 words) or type 'pikachu':") + "\n")
+		s.WriteString(promptStyle.Render("What would you like me to make?") + "\n")
+		s.WriteString(helpStyle.Render("Try: a cat, a box, a house, a cake, or anything else!") + "\n\n")
 		s.WriteString(inputStyle.Render(m.textInput.View()) + "\n\n")
-		
-		wordCount := len(strings.Fields(m.textInput.Value()))
-		status := fmt.Sprintf("Words: %d/5", wordCount)
-		if wordCount < 2 && m.textInput.Value() != "" && strings.ToLower(m.textInput.Value()) != "pikachu" {
-			status += " (minimum 2 words)"
-		}
-		s.WriteString(helpStyle.Render(status) + "\n")
 		s.WriteString(helpStyle.Render("Press Enter to generate • Esc to quit"))
 
-	case stateDisplay:
-		s.WriteString(promptStyle.Render(fmt.Sprintf("Generated: %s", m.prompt)) + "\n")
-		s.WriteString(objectStyle.Width(60).Height(15).Render(m.object3D) + "\n")
-		
-		makeNewBtn := buttonStyle.Render("[M] Make a new")
-		tryBtn := buttonStyle.Render("[T] Try again")
-		
-		buttons := lipgloss.JoinHorizontal(lipgloss.Top, makeNewBtn, tryBtn)
-		s.WriteString(lipgloss.PlaceHorizontal(60, lipgloss.Center, buttons) + "\n\n")
-		s.WriteString(helpStyle.Render("Press M to make a new • T to try again • Esc to quit"))
+	case stateGenerating:
+		s.WriteString(promptStyle.Render(m.generatingMsg) + "\n\n")
+		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n⚙️  Running AI model...\n\nThis may take a moment...") + "\n")
+		s.WriteString(helpStyle.Render("Please wait..."))
+	
+	case stateConverting:
+		s.WriteString(promptStyle.Render("Converting to STL...") + "\n\n")
+		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n🔧 Converting SCAD to STL...\n\nAlmost there...") + "\n")
+		s.WriteString(helpStyle.Render("Please wait..."))
 
 	case stateSTLView:
 		// Calculate render dimensions based on terminal size
@@ -316,80 +332,79 @@ func (m model) View() string {
 	)
 }
 
-func generate3D(prompt string) string {
-	objects := map[string]string{
-		"duck": `
-       __
-     <(o )___
-      ( ._> /
-       '---'`,
-		"car": `
-       ______
-      /|_||_\'.__ 
-     (   _    _ _\
-     ='-(_)--(_)-'`,
-		"flower": `
-       .--.---.
-      /  (   ) \
-      \  '---' /
-       '--\_/--'
-          |
-        __|__`,
-		"house": `
-         /\
-        /  \
-       /    \
-      |  __  |
-      | |  | |
-      |_|__|_|`,
-		"tree": `
-        🌳
-       /|\
-      / | \
-     /  |  \
-        |
-       _|_`,
-		"cat": `
-      /\_/\
-     ( o.o )
-      > ^ <
-     /|   |\
-    (_|   |_)`,
-		"star": `
-        ✨
-       / \
-      /   \
-     |  *  |
-      \   /
-       \ /`,
-	}
-
-	prompt = strings.ToLower(prompt)
-	
-	for key, art := range objects {
-		if strings.Contains(prompt, key) {
-			return art
-		}
-	}
-
-	ascii3D := fmt.Sprintf(`
-    ╔════════════╗
-    ║            ║
-    ║   %s%-8s%s   ║
-    ║            ║
-    ║    🎲 3D    ║
-    ║            ║
-    ╚════════════╝
-      Processing...`, "\033[1m", strings.ToUpper(prompt[:min(8, len(prompt))]), "\033[0m")
-
-	return ascii3D
+type generateObjectMsg struct {
+	stlPath string
+	err     error
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func generateObjectCmd(objectName string) tea.Cmd {
+	return func() tea.Msg {
+		// Create k directory if it doesn't exist
+		if err := os.MkdirAll("k", 0755); err != nil {
+			return generateObjectMsg{err: err}
+		}
+
+		// Run the AI model to generate SCAD code
+		prompt := fmt.Sprintf("Hey cadmonkey, make me %s", objectName)
+		cmd := exec.Command("./run", "-m", "k-1b-q8_0.gguf", "-p", prompt)
+		cmd.Dir = "k"
+		
+		output, err := cmd.Output()
+		if err != nil {
+			return generateObjectMsg{err: fmt.Errorf("failed to run model: %w", err)}
+		}
+
+		// Clean model output - remove prompt echo and 'model' line
+		cleanOutput := cleanModelOutput(string(output), objectName)
+		
+		// Save cleaned model output as SCAD file
+		scadPath := filepath.Join("k", "output.scad")
+		if err := os.WriteFile(scadPath, []byte(cleanOutput), 0644); err != nil {
+			return generateObjectMsg{err: fmt.Errorf("failed to write SCAD file: %w", err)}
+		}
+
+		// Convert SCAD to STL using OpenSCAD
+		stlPath := filepath.Join("k", "output.stl")
+		cmd = exec.Command("openscad", "-o", stlPath, scadPath)
+		openscadOutput, err := cmd.CombinedOutput()
+		if err != nil {
+			return generateObjectMsg{err: fmt.Errorf("OpenSCAD error: %s\nCommand output: %s\nCleaned SCAD:\n%s\nRaw model output:\n%s", err.Error(), string(openscadOutput), cleanOutput, string(output))}
+		}
+
+		return generateObjectMsg{stlPath: stlPath}
 	}
-	return b
+}
+
+func cleanModelOutput(output, objectName string) string {
+	lines := strings.Split(output, "\n")
+	var cleanLines []string
+	
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip the "user" line
+		if line == "user" {
+			continue
+		}
+		// Skip the prompt echo line
+		if strings.Contains(line, "Hey cadmonkey, make me") {
+			continue
+		}
+		// Skip the "model" line
+		if line == "model" {
+			continue
+		}
+		// Skip EOF marker
+		if strings.Contains(line, "> EOF by user") {
+			continue
+		}
+		// Skip empty lines at the beginning
+		if len(cleanLines) == 0 && line == "" {
+			continue
+		}
+		cleanLines = append(cleanLines, line)
+	}
+	
+	return strings.Join(cleanLines, "\n")
 }
 
 func main() {
