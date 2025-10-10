@@ -222,9 +222,9 @@ func (r *Renderer) RenderModel(model *STLModel, rotX, rotY, rotZ float64, style 
 		Multiply(RotationMatrixY(rotY)).
 		Multiply(RotationMatrixZ(rotZ))
 
-	chars := []rune{'█', '▓', '▒', '░', '▐', '▌', '·', ' '}
+	chars := []rune{'█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '▓', '▒', '░', '·', ' '}
 	if style == "wireframe" {
-		chars = []rune{'#', '+', '*', 'o', '.', '·', ' '}
+		chars = []rune{'#', '■', '▪', '+', '*', 'o', '.', '·', ' '}
 	}
 
 	for _, tri := range model.Triangles {

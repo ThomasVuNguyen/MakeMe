@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,28 +18,17 @@ const (
 	stateInput state = iota
 	stateGenerating
 	stateConverting
-	stateSTLView
 )
 
 type model struct {
 	state        state
 	textInput    textinput.Model
-	prompt       string
-	object3D     string
 	selectedObject string
 	width        int
 	height       int
-	stlModel     *STLModel
-	rotX, rotY   float64
-	rotZ         float64
-	renderStyle  string
-	autoRotate   bool
-	rotationSpeed float64
 	generatingMsg string
 	err          error
 }
-
-type tickMsg time.Time
 
 var (
 	titleStyle = lipgloss.NewStyle().
@@ -92,11 +80,8 @@ func initialModel() model {
 	ti.Width = 46
 
 	return model{
-		state:         stateInput,
-		textInput:     ti,
-		renderStyle:   "solid",
-		autoRotate:    true,
-		rotationSpeed: 0.03,
+		state:     stateInput,
+		textInput: ti,
 	}
 }
 
@@ -104,26 +89,12 @@ func (m model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tickMsg:
-		if m.state == stateSTLView && m.autoRotate {
-			m.rotY += m.rotationSpeed
-			return m, tickCmd()
-		}
-		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		if m.state == stateSTLView && m.autoRotate {
-			return m, tickCmd()
-		}
 		return m, nil
 
 	case generateObjectMsg:
@@ -134,21 +105,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		}
 		
-		// Load the generated STL
-		stlModel, err := ParseSTL(msg.stlPath)
-		if err != nil {
-			m.err = err
-			m.state = stateInput
-			m.textInput.Focus()
-			return m, textinput.Blink
+		// Display OBJ file using terminal3d
+		// Exit the current app and launch terminal3d directly
+		fmt.Printf("\n🎯 Opening 3D model: %s\n", msg.stlPath)
+		fmt.Printf("Press Ctrl+C to return when done viewing.\n\n")
+		
+		cmd := exec.Command("t3d", msg.stlPath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Error launching terminal3d: %v\n", err)
 		}
 		
-		m.stlModel = stlModel
-		m.stlModel.Name = m.selectedObject
-		m.state = stateSTLView
-		m.rotX, m.rotY, m.rotZ = 0, 0, 0
-		m.autoRotate = true
-		return m, tickCmd()
+		fmt.Printf("\nReturning to MakeMe...\n")
+		return m, tea.Quit
+		
+		// Return to input for next generation
+		m.state = stateInput
+		m.textInput.Focus()
+		return m, textinput.Blink
 	
 	case tea.KeyMsg:
 		switch m.state {
@@ -160,6 +137,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedObject = objectName
 					m.state = stateGenerating
 					m.generatingMsg = "Generating " + objectName + "..."
+					m.err = nil // Clear any previous errors
 					m.textInput.Reset()
 					return m, generateObjectCmd(objectName)
 				}
@@ -178,56 +156,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c", "esc":
 				return m, tea.Quit
 			}
-
-		case stateSTLView:
-			switch msg.String() {
-			case " ":
-				m.autoRotate = !m.autoRotate
-				if m.autoRotate {
-					return m, tickCmd()
-				}
-				return m, nil
-			case "left", "a":
-				m.autoRotate = false
-				m.rotY += 0.1
-			case "right", "d":
-				m.autoRotate = false
-				m.rotY -= 0.1
-			case "up", "w":
-				m.autoRotate = false
-				m.rotX += 0.1
-			case "down", "s":
-				m.autoRotate = false
-				m.rotX -= 0.1
-			case "q", "Q":
-				m.autoRotate = false
-				m.rotZ += 0.1
-			case "e", "E":
-				m.autoRotate = false
-				m.rotZ -= 0.1
-			case "r", "R":
-				m.rotX, m.rotY, m.rotZ = 0, 0, 0
-				m.autoRotate = true
-				return m, tickCmd()
-			case "v", "V":
-				if m.renderStyle == "solid" {
-					m.renderStyle = "wireframe"
-				} else {
-					m.renderStyle = "solid"
-				}
-			case "m", "M":
-				m.autoRotate = false
-				m.state = stateInput
-				m.textInput.Focus()
-				return m, textinput.Blink
-			case "t", "T", "enter":
-				m.rotX, m.rotY, m.rotZ = 0, 0, 0
-				m.autoRotate = true
-				return m, tickCmd()
-			case "ctrl+c", "esc":
-				return m, tea.Quit
-			}
-			return m, nil
 		}
 	}
 
@@ -269,58 +197,6 @@ func (m model) View() string {
 		s.WriteString(promptStyle.Render("Converting to STL...") + "\n\n")
 		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n🔧 Converting SCAD to STL...\n\nAlmost there...") + "\n")
 		s.WriteString(helpStyle.Render("Please wait..."))
-
-	case stateSTLView:
-		// Calculate render dimensions based on terminal size
-		// Account for header, status, controls and margins
-		headerLines := 6  // title, status, spacing
-		controlLines := 4 // control instructions
-		marginLines := 2  // top/bottom margins
-		
-		renderHeight := m.height - headerLines - controlLines - marginLines
-		if renderHeight < 20 {
-			renderHeight = 20
-		}
-		if renderHeight > 150 {
-			renderHeight = 150
-		}
-		
-		// Width calculation - use most of terminal width
-		renderWidth := m.width - 4
-		if renderWidth < 40 {
-			renderWidth = 40
-		}
-		if renderWidth > 300 {
-			renderWidth = 300
-		}
-		
-		rotationStatus := "Auto-rotating"
-		if !m.autoRotate {
-			rotationStatus = "Manual control"
-		}
-		
-		s.WriteString(promptStyle.Render(fmt.Sprintf("3D Model: %s", m.stlModel.Name)) + "\n")
-		s.WriteString(helpStyle.Render(fmt.Sprintf("Mode: %s | %s | X:%.1f Y:%.1f Z:%.1f", 
-			m.renderStyle, rotationStatus, m.rotX, m.rotY, m.rotZ)) + "\n")
-		
-		renderer := NewRenderer(renderWidth-4, renderHeight-2)
-		stlRender := renderer.RenderModel(m.stlModel, m.rotX, m.rotY, m.rotZ, m.renderStyle)
-		
-		// Remove extra padding from objectStyle and center properly
-		modelDisplay := lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("#50FA7B")).
-			Align(lipgloss.Center).
-			Width(renderWidth).
-			Height(renderHeight).
-			Render(stlRender)
-		
-		s.WriteString("\n" + modelDisplay + "\n")
-		
-		s.WriteString(helpStyle.Render("Controls:") + "\n")
-		s.WriteString(helpStyle.Render("SPACE: Pause/Resume rotation | Arrow keys: Manual rotate") + "\n")
-		s.WriteString(helpStyle.Render("R: Reset & auto-rotate | V: Toggle solid/wireframe") + "\n")
-		s.WriteString(helpStyle.Render("M: Make a new | T: Reset rotation | Esc: Quit"))
 	}
 
 	return lipgloss.Place(
@@ -341,7 +217,7 @@ func generateObjectCmd(objectName string) tea.Cmd {
 	return func() tea.Msg {
 		// Create k directory if it doesn't exist
 		if err := os.MkdirAll("k", 0755); err != nil {
-			return generateObjectMsg{err: err}
+			return generateObjectMsg{err: fmt.Errorf("failed to create k directory: %w", err)}
 		}
 
 		// Run the AI model to generate SCAD code
@@ -349,13 +225,22 @@ func generateObjectCmd(objectName string) tea.Cmd {
 		cmd := exec.Command("./run", "-m", "k-1b-q8_0.gguf", "-p", prompt)
 		cmd.Dir = "k"
 		
-		output, err := cmd.Output()
+		// Capture both stdout and stderr
+		output, err := cmd.CombinedOutput()
 		if err != nil {
-			return generateObjectMsg{err: fmt.Errorf("failed to run model: %w", err)}
+			return generateObjectMsg{err: fmt.Errorf("failed to run model: %w\nOutput: %s", err, string(output))}
+		}
+
+		if len(output) == 0 {
+			return generateObjectMsg{err: fmt.Errorf("model produced no output")}
 		}
 
 		// Clean model output - remove prompt echo and 'model' line
 		cleanOutput := cleanModelOutput(string(output), objectName)
+		
+		if strings.TrimSpace(cleanOutput) == "" {
+			return generateObjectMsg{err: fmt.Errorf("no valid SCAD code found after cleaning. Raw output:\n%s", string(output))}
+		}
 		
 		// Save cleaned model output as SCAD file
 		scadPath := filepath.Join("k", "output.scad")
@@ -365,46 +250,73 @@ func generateObjectCmd(objectName string) tea.Cmd {
 
 		// Convert SCAD to STL using OpenSCAD
 		stlPath := filepath.Join("k", "output.stl")
-		cmd = exec.Command("openscad", "-o", stlPath, scadPath)
+		cmd = exec.Command("openscad", "-o", stlPath, "-D", "$fn=100", "-D", "$fs=0.1", "-D", "$fa=1", scadPath)
 		openscadOutput, err := cmd.CombinedOutput()
 		if err != nil {
-			return generateObjectMsg{err: fmt.Errorf("OpenSCAD error: %s\nCommand output: %s\nCleaned SCAD:\n%s\nRaw model output:\n%s", err.Error(), string(openscadOutput), cleanOutput, string(output))}
+			return generateObjectMsg{err: fmt.Errorf("OpenSCAD error: %s\nCommand output: %s\nCleaned SCAD:\n%s", err.Error(), string(openscadOutput), cleanOutput)}
 		}
 
-		return generateObjectMsg{stlPath: stlPath}
+		// Check if STL file was created
+		if _, err := os.Stat(stlPath); os.IsNotExist(err) {
+			return generateObjectMsg{err: fmt.Errorf("STL file was not created by OpenSCAD. Output: %s", string(openscadOutput))}
+		}
+
+		// Convert STL to OBJ using our custom converter
+		objPath := filepath.Join("k", "output.obj")
+		cmd = exec.Command("./stl2obj", stlPath, objPath)
+		stl2objOutput, err := cmd.CombinedOutput()
+		if err != nil {
+			return generateObjectMsg{err: fmt.Errorf("failed to convert STL to OBJ: %w\nOutput: %s", err, string(stl2objOutput))}
+		}
+
+		// Check if OBJ file was created
+		if _, err := os.Stat(objPath); os.IsNotExist(err) {
+			return generateObjectMsg{err: fmt.Errorf("OBJ file was not created. STL2OBJ output: %s", string(stl2objOutput))}
+		}
+
+		return generateObjectMsg{stlPath: objPath}
 	}
 }
 
 func cleanModelOutput(output, objectName string) string {
 	lines := strings.Split(output, "\n")
-	var cleanLines []string
+	var scadLines []string
+	foundModel := false
 	
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		// Skip the "user" line
-		if line == "user" {
-			continue
-		}
-		// Skip the prompt echo line
-		if strings.Contains(line, "Hey cadmonkey, make me") {
-			continue
-		}
-		// Skip the "model" line
+		
+		// Look for the "model" marker
 		if line == "model" {
+			foundModel = true
 			continue
 		}
-		// Skip EOF marker
-		if strings.Contains(line, "> EOF by user") {
-			continue
+		
+		// After finding "model", collect SCAD code until we hit EOF or debug info
+		if foundModel {
+			// Stop at EOF marker or debug output
+			if strings.Contains(line, "> EOF by user") ||
+			   strings.Contains(line, "llama_perf_") ||
+			   strings.Contains(line, "main:") ||
+			   strings.Contains(line, "sampler") ||
+			   strings.Contains(line, "system_info:") ||
+			   strings.Contains(line, "ggml_") {
+				break
+			}
+			
+			// Skip empty lines at the beginning
+			if len(scadLines) == 0 && line == "" {
+				continue
+			}
+			
+			// Only add lines that look like SCAD code or are empty continuation lines
+			if line != "" {
+				scadLines = append(scadLines, line)
+			}
 		}
-		// Skip empty lines at the beginning
-		if len(cleanLines) == 0 && line == "" {
-			continue
-		}
-		cleanLines = append(cleanLines, line)
 	}
 	
-	return strings.Join(cleanLines, "\n")
+	return strings.Join(scadLines, "\n")
 }
 
 func main() {
