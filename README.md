@@ -15,32 +15,48 @@ MakeMe is a CLI application that transforms natural language descriptions into b
 ## 🛠️ Prerequisites
 
 - **Go** (1.19 or later)
+- **Rust** toolchain (cargo) to build the bundled Terminal3d viewer
 - **OpenSCAD** - Install via `brew install openscad`
-- **Terminal3d** - Install via `brew install liam-ilan/terminal3d/terminal3d`
 
 ## 🚀 Quick Start
 
-### 1. Build the Application
+### Build from Source
 
 ```bash
 # Clone the repository
 git clone <repository-url>
 cd MakeMe
 
-# Build the main application
-go build -o makeme main.go stl.go
+# Build the bundled terminal3d viewer (once per target)
+cargo build --release --manifest-path deps/terminal3d/Cargo.toml
 
-# Build the STL to OBJ converter
+# Build the primary binaries
+go build -o makeme main.go stl.go
 go build -o stl2obj stl2obj.go stl.go
 ```
 
-### 2. Run MakeMe
+### Run the CLI
 
 ```bash
 ./makeme
 ```
 
-### 3. Create Something Amazing!
+Set `MAKEME_T3D` if you want to point the viewer to a custom `t3d` location; otherwise the app uses the bundled binary.
+
+### Use a Packaged Release
+
+```bash
+# Download the appropriate archive (e.g., makeme-darwin-arm64.tar.gz)
+tar -xzf makeme-<platform>.tar.gz
+cd makeme-<platform>
+
+# Run the app
+./makeme
+```
+
+The archive already contains `t3d`, so no extra installation steps are needed.
+
+### Create Something Amazing!
 
 1. **Enter your description**: Type what you want to create (e.g., "a dragon", "a coffee mug", "a spaceship")
 2. **Press Enter**: Watch the AI model generate OpenSCAD code
@@ -105,12 +121,27 @@ The application uses high-resolution settings by default:
 - Check that the AI generated valid SCAD code in `k/output.scad`
 
 ### 3D viewer issues
-- Ensure terminal3d is installed: `t3d --version`
+- Ensure the bundled binary exists: `deps/terminal3d/target/release/t3d`
+- (Optional) point `MAKEME_T3D` to a custom viewer path
 - Make sure your terminal supports mouse input and has sufficient size
 
 ### No output or stuck
 - The AI model may take time to load on first run
 - Check for error messages in red at the top of the interface
+
+## 📦 Release Bundles
+
+Create self-contained archives that include MakeMe, the STL converter, and the Terminal3d viewer.
+
+```
+# Build for the current platform
+scripts/package.sh
+
+# Or specify a target (darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, windows-amd64)
+scripts/package.sh darwin-arm64
+```
+
+Artifacts are written to `dist/`. At runtime MakeMe automatically looks for a `t3d` binary next to the executable, inside `deps/terminal3d/target/release/`, or anywhere on `PATH`. Set `MAKEME_T3D=/custom/path/to/t3d` to point to an alternative viewer if needed.
 
 ## 🤝 Contributing
 

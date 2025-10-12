@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -21,14 +22,18 @@ const (
 )
 
 type model struct {
-	state        state
-	textInput    textinput.Model
+	state          state
+	textInput      textinput.Model
 	selectedObject string
-	width        int
-	height       int
-	generatingMsg string
-	err          error
+	width          int
+	height         int
+	generatingMsg  string
+	err            error
 }
+
+const (
+	terminal3dEnvOverride = "MAKEME_T3D"
+)
 
 var (
 	titleStyle = lipgloss.NewStyle().
@@ -89,7 +94,6 @@ func (m model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -104,29 +108,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.Focus()
 			return m, textinput.Blink
 		}
-		
+
+		t3dPath, err := findTerminal3DExecutable()
+		if err != nil {
+			m.err = err
+			m.state = stateInput
+			m.textInput.Focus()
+			return m, textinput.Blink
+		}
+
 		// Display OBJ file using terminal3d
 		// Exit the current app and launch terminal3d directly
 		fmt.Printf("\n🎯 Opening 3D model: %s\n", msg.stlPath)
 		fmt.Printf("Press Ctrl+C to return when done viewing.\n\n")
-		
-		cmd := exec.Command("t3d", msg.stlPath)
+
+		cmd := exec.Command(t3dPath, msg.stlPath)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		
+
 		if err := cmd.Run(); err != nil {
 			fmt.Printf("Error launching terminal3d: %v\n", err)
 		}
-		
+
 		fmt.Printf("\nReturning to MakeMe...\n")
 		return m, tea.Quit
-		
+
 		// Return to input for next generation
 		m.state = stateInput
 		m.textInput.Focus()
 		return m, textinput.Blink
-	
+
 	case tea.KeyMsg:
 		switch m.state {
 		case stateInput:
@@ -150,7 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c", "esc":
 				return m, tea.Quit
 			}
-		
+
 		case stateConverting:
 			switch msg.String() {
 			case "ctrl+c", "esc":
@@ -172,13 +184,13 @@ func (m model) View() string {
 	var s strings.Builder
 
 	s.WriteString(titleStyle.Render("🎨 MakeMe - 3D Object Creator") + "\n\n")
-	
+
 	// Display error if any
 	if m.err != nil {
 		errorStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF5555")).
 			Bold(true)
-		s.WriteString(errorStyle.Render("Error: " + m.err.Error()) + "\n\n")
+		s.WriteString(errorStyle.Render("Error: "+m.err.Error()) + "\n\n")
 	}
 
 	switch m.state {
@@ -192,7 +204,7 @@ func (m model) View() string {
 		s.WriteString(promptStyle.Render(m.generatingMsg) + "\n\n")
 		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n⚙️  Running AI model...\n\nThis may take a moment...") + "\n")
 		s.WriteString(helpStyle.Render("Please wait..."))
-	
+
 	case stateConverting:
 		s.WriteString(promptStyle.Render("Converting to STL...") + "\n\n")
 		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n🔧 Converting SCAD to STL...\n\nAlmost there...") + "\n")
@@ -224,7 +236,7 @@ func generateObjectCmd(objectName string) tea.Cmd {
 		prompt := fmt.Sprintf("Hey cadmonkey, make me %s", objectName)
 		cmd := exec.Command("./run", "-m", "k-1b-q8_0.gguf", "-p", prompt)
 		cmd.Dir = "k"
-		
+
 		// Capture both stdout and stderr
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -237,11 +249,11 @@ func generateObjectCmd(objectName string) tea.Cmd {
 
 		// Clean model output - remove prompt echo and 'model' line
 		cleanOutput := cleanModelOutput(string(output), objectName)
-		
+
 		if strings.TrimSpace(cleanOutput) == "" {
 			return generateObjectMsg{err: fmt.Errorf("no valid SCAD code found after cleaning. Raw output:\n%s", string(output))}
 		}
-		
+
 		// Save cleaned model output as SCAD file
 		scadPath := filepath.Join("k", "output.scad")
 		if err := os.WriteFile(scadPath, []byte(cleanOutput), 0644); err != nil {
@@ -278,44 +290,126 @@ func generateObjectCmd(objectName string) tea.Cmd {
 	}
 }
 
+func findTerminal3DExecutable() (string, error) {
+	binaryNames := []string{"t3d"}
+	if runtime.GOOS == "windows" {
+		binaryNames = append([]string{"t3d.exe"}, binaryNames...)
+	}
+
+	seen := make(map[string]struct{})
+	var candidates []string
+
+	push := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		candidates = append(candidates, path)
+	}
+
+	if override := os.Getenv(terminal3dEnvOverride); override != "" {
+		push(override)
+	}
+
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		for _, name := range binaryNames {
+			push(filepath.Join(exeDir, name))
+			push(filepath.Join(exeDir, "bin", name))
+			push(filepath.Join(exeDir, "deps", "terminal3d", "target", "release", name))
+		}
+	}
+
+	for _, name := range binaryNames {
+		push("./" + name)
+		push(filepath.Join("deps", "terminal3d", "target", "release", name))
+	}
+
+	for _, candidate := range candidates {
+		if hasPathSeparator(candidate) {
+			resolved := candidate
+			if !filepath.IsAbs(resolved) {
+				if abs, err := filepath.Abs(resolved); err == nil {
+					resolved = abs
+				}
+			}
+			if isExecutable(resolved) {
+				return resolved, nil
+			}
+			continue
+		}
+
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path, nil
+		}
+	}
+
+	if path, err := exec.LookPath("t3d"); err == nil {
+		return path, nil
+	}
+
+	return "", fmt.Errorf("terminal3d binary not found. Set %s to the binary path or ensure 't3d' is on PATH", terminal3dEnvOverride)
+}
+
+func hasPathSeparator(path string) bool {
+	return strings.Contains(path, string(os.PathSeparator)) || strings.Contains(path, "/") || strings.Contains(path, "\\")
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0111 != 0
+}
+
 func cleanModelOutput(output, objectName string) string {
 	lines := strings.Split(output, "\n")
 	var scadLines []string
 	foundModel := false
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		
+
 		// Look for the "model" marker
 		if line == "model" {
 			foundModel = true
 			continue
 		}
-		
+
 		// After finding "model", collect SCAD code until we hit EOF or debug info
 		if foundModel {
 			// Stop at EOF marker or debug output
 			if strings.Contains(line, "> EOF by user") ||
-			   strings.Contains(line, "llama_perf_") ||
-			   strings.Contains(line, "main:") ||
-			   strings.Contains(line, "sampler") ||
-			   strings.Contains(line, "system_info:") ||
-			   strings.Contains(line, "ggml_") {
+				strings.Contains(line, "llama_perf_") ||
+				strings.Contains(line, "main:") ||
+				strings.Contains(line, "sampler") ||
+				strings.Contains(line, "system_info:") ||
+				strings.Contains(line, "ggml_") {
 				break
 			}
-			
+
 			// Skip empty lines at the beginning
 			if len(scadLines) == 0 && line == "" {
 				continue
 			}
-			
+
 			// Only add lines that look like SCAD code or are empty continuation lines
 			if line != "" {
 				scadLines = append(scadLines, line)
 			}
 		}
 	}
-	
+
 	return strings.Join(scadLines, "\n")
 }
 
