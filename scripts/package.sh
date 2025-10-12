@@ -7,22 +7,27 @@ GO_CACHE_DIR="${GO_CACHE_DIR:-$ROOT_DIR/.cache/go-build}"
 mkdir -p "$GO_CACHE_DIR"
 export GOCACHE="$GO_CACHE_DIR"
 
-for tool in go cargo rustc; do
+for tool in go cargo rustc curl unzip; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Missing required tool: $tool" >&2
     exit 1
   fi
 done
 
+RUNNER_ARCHIVE=""
+RUNNER_URL=""
+RUNNER_SUBDIR=""
+RUNNER_LABEL=""
+
 TARGET_ARG="${1-}"
 if [[ -n "$TARGET_ARG" ]]; then
   case "$TARGET_ARG" in
-    darwin-arm64|darwin-amd64|linux-amd64|linux-arm64|windows-amd64)
+    darwin-arm64|darwin-amd64|linux-amd64|linux-arm64|linux-arm|windows-amd64)
       IFS=- read -r GOOS GOARCH <<<"$TARGET_ARG"
       ;;
     *)
       echo "Unsupported target '$TARGET_ARG'." >&2
-      echo "Use darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, or windows-amd64." >&2
+      echo "Use darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, linux-arm, or windows-amd64." >&2
       exit 1
       ;;
   esac
@@ -49,13 +54,31 @@ case "${GOOS}-${GOARCH}" in
   linux-arm64)
     RUST_TARGET="${RUST_TARGET:-aarch64-unknown-linux-gnu}"
     ;;
+  linux-arm)
+    RUST_TARGET="${RUST_TARGET:-armv7-unknown-linux-gnueabihf}"
+    ;;
   windows-amd64)
     RUST_TARGET="${RUST_TARGET:-x86_64-pc-windows-msvc}"
     ;;
   *)
     RUST_TARGET="${RUST_TARGET:-}"
     ;;
- esac
+esac
+
+case "${GOOS}-${GOARCH}" in
+  darwin-arm64)
+    RUNNER_ARCHIVE="llamacpp-macos-arm64.zip"
+    RUNNER_URL="https://huggingface.co/ThomasTheMaker/llamacpp/resolve/main/llamacpp-macos-arm64.zip"
+    RUNNER_SUBDIR="runtime/darwin-arm64"
+    RUNNER_LABEL="macOS arm64"
+    ;;
+  linux-arm64)
+    RUNNER_ARCHIVE="llamacpp-rpi5.zip"
+    RUNNER_URL="https://huggingface.co/ThomasTheMaker/llamacpp/resolve/main/llamacpp-rpi5.zip"
+    RUNNER_SUBDIR="runtime/rpi5"
+    RUNNER_LABEL="Raspberry Pi 5"
+    ;;
+esac
 
 if [[ -z "$RUST_TARGET" ]]; then
   RUST_TARGET="$(rustc -Vv | awk '/^host: /{print $2; exit}')"
@@ -107,6 +130,36 @@ if [[ ! -f "$T3D_SOURCE" ]]; then
 fi
 cp "$T3D_SOURCE" "$PACKAGE_DIR/$T3D_NAME"
 chmod +x "$PACKAGE_DIR/$T3D_NAME"
+
+mkdir -p "$PACKAGE_DIR/k"
+
+if [[ -n "$RUNNER_URL" ]]; then
+  echo "Packaging llama.cpp runtime (${RUNNER_LABEL})..."
+  ARCHIVE_CACHE="$ROOT_DIR/k/$RUNNER_ARCHIVE"
+  if [[ ! -f "$ARCHIVE_CACHE" ]]; then
+    mkdir -p "$ROOT_DIR/k"
+    curl -L "$RUNNER_URL" -o "$ARCHIVE_CACHE"
+  fi
+
+  DEST_DIR="$PACKAGE_DIR/k/$RUNNER_SUBDIR"
+  rm -rf "$DEST_DIR"
+  mkdir -p "$DEST_DIR"
+  unzip -oq "$ARCHIVE_CACHE" -d "$DEST_DIR"
+
+  PRIMARY_RUN=$(find "$DEST_DIR" -type f -name run | head -n 1)
+  if [[ -n "$PRIMARY_RUN" ]]; then
+    chmod +x "$PRIMARY_RUN"
+    cp "$PRIMARY_RUN" "$PACKAGE_DIR/k/run"
+    chmod +x "$PACKAGE_DIR/k/run"
+  fi
+else
+  if [[ -f "$ROOT_DIR/k/run" ]]; then
+    cp "$ROOT_DIR/k/run" "$PACKAGE_DIR/k/run"
+    chmod +x "$PACKAGE_DIR/k/run"
+  else
+    echo "Warning: No llama.cpp runtime configured for ${GOOS}/${GOARCH}." >&2
+  fi
+fi
 
 cp "$ROOT_DIR/README.md" "$PACKAGE_DIR/README.md"
 

@@ -1,7 +1,12 @@
 package main
 
 import (
+	"archive/zip"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +38,9 @@ type model struct {
 
 const (
 	terminal3dEnvOverride = "MAKEME_T3D"
+	modelDirectory        = "k"
+	modelFilename         = "k-1b-q8_0.gguf"
+	modelDownloadURL      = "https://huggingface.co/ThomasTheMaker/k-1b-gguf/resolve/main/k-1b-q8_0.gguf"
 )
 
 var (
@@ -76,6 +84,32 @@ var (
 			Foreground(lipgloss.Color("#6272A4")).
 			MarginTop(1)
 )
+
+type runnerPackage struct {
+	url           string
+	archiveName   string
+	extractSubdir string
+	label         string
+}
+
+var (
+	runnerPackages = map[string]runnerPackage{
+		"darwin/arm64": {
+			url:           "https://huggingface.co/ThomasTheMaker/llamacpp/resolve/main/llamacpp-macos-arm64.zip",
+			archiveName:   "llamacpp-macos-arm64.zip",
+			extractSubdir: filepath.Join("runtime", "darwin-arm64"),
+			label:         "macOS arm64",
+		},
+		"linux/arm64": {
+			url:           "https://huggingface.co/ThomasTheMaker/llamacpp/resolve/main/llamacpp-rpi5.zip",
+			archiveName:   "llamacpp-rpi5.zip",
+			extractSubdir: filepath.Join("runtime", "rpi5"),
+			label:         "Raspberry Pi 5",
+		},
+	}
+)
+
+var runnerOverrideEnvVars = []string{"MAKEME_RUN", "MAKEME_LLAMAFILE"}
 
 func initialModel() model {
 	ti := textinput.New()
@@ -228,14 +262,23 @@ type generateObjectMsg struct {
 func generateObjectCmd(objectName string) tea.Cmd {
 	return func() tea.Msg {
 		// Create k directory if it doesn't exist
-		if err := os.MkdirAll("k", 0755); err != nil {
+		if err := os.MkdirAll(modelDirectory, 0755); err != nil {
 			return generateObjectMsg{err: fmt.Errorf("failed to create k directory: %w", err)}
+		}
+
+		runnerPath, err := ensureModelRunner()
+		if err != nil {
+			return generateObjectMsg{err: err}
+		}
+
+		if err := ensureModelAssets(); err != nil {
+			return generateObjectMsg{err: err}
 		}
 
 		// Run the AI model to generate SCAD code
 		prompt := fmt.Sprintf("Hey cadmonkey, make me %s", objectName)
-		cmd := exec.Command("./run", "-m", "k-1b-q8_0.gguf", "-p", prompt)
-		cmd.Dir = "k"
+		cmd := exec.Command(runnerPath, "-m", "k-1b-q8_0.gguf", "-p", prompt)
+		cmd.Dir = modelDirectory
 
 		// Capture both stdout and stderr
 		output, err := cmd.CombinedOutput()
@@ -255,13 +298,13 @@ func generateObjectCmd(objectName string) tea.Cmd {
 		}
 
 		// Save cleaned model output as SCAD file
-		scadPath := filepath.Join("k", "output.scad")
+		scadPath := filepath.Join(modelDirectory, "output.scad")
 		if err := os.WriteFile(scadPath, []byte(cleanOutput), 0644); err != nil {
 			return generateObjectMsg{err: fmt.Errorf("failed to write SCAD file: %w", err)}
 		}
 
 		// Convert SCAD to STL using OpenSCAD
-		stlPath := filepath.Join("k", "output.stl")
+		stlPath := filepath.Join(modelDirectory, "output.stl")
 		cmd = exec.Command("openscad", "-o", stlPath, "-D", "$fn=100", "-D", "$fs=0.1", "-D", "$fa=1", scadPath)
 		openscadOutput, err := cmd.CombinedOutput()
 		if err != nil {
@@ -274,7 +317,7 @@ func generateObjectCmd(objectName string) tea.Cmd {
 		}
 
 		// Convert STL to OBJ using our custom converter
-		objPath := filepath.Join("k", "output.obj")
+		objPath := filepath.Join(modelDirectory, "output.obj")
 		cmd = exec.Command("./stl2obj", stlPath, objPath)
 		stl2objOutput, err := cmd.CombinedOutput()
 		if err != nil {
@@ -370,6 +413,240 @@ func isExecutable(path string) bool {
 		return true
 	}
 	return info.Mode().Perm()&0111 != 0
+}
+
+func ensureModelAssets() error {
+	modelPath := filepath.Join(modelDirectory, modelFilename)
+
+	if _, err := os.Stat(modelPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("unable to access model file %s: %w", modelPath, err)
+	}
+
+	fmt.Printf("\n📥 Downloading model %s...\nThis may take a few minutes on first run.\n", modelFilename)
+	written, err := downloadToFile(modelDownloadURL, modelPath, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to download model: %w", err)
+	}
+
+	fmt.Printf("✅ Model downloaded (%.2f MB).\n", float64(written)/1024/1024)
+	return nil
+}
+
+func ensureModelRunner() (string, error) {
+	for _, envVar := range runnerOverrideEnvVars {
+		if override := os.Getenv(envVar); override != "" {
+			if isExecutable(override) {
+				if abs, err := filepath.Abs(override); err == nil {
+					return abs, nil
+				}
+				return override, nil
+			}
+			return "", fmt.Errorf("provided runner override %s=%q is not executable", envVar, override)
+		}
+	}
+
+	defaultRun := filepath.Join(modelDirectory, "run")
+	if isExecutable(defaultRun) {
+		if abs, err := filepath.Abs(defaultRun); err == nil {
+			return abs, nil
+		}
+		return defaultRun, nil
+	}
+
+	key := runtime.GOOS + "/" + runtime.GOARCH
+	pkg, ok := runnerPackages[key]
+	if !ok {
+		return "", fmt.Errorf("no bundled llama.cpp runtime available for %s. Place an executable at %s or set %s", key, defaultRun, runnerOverrideEnvVars[0])
+	}
+
+	extractDir := filepath.Join(modelDirectory, pkg.extractSubdir)
+	if runner, err := findRunnerBinary(extractDir); err == nil {
+		if abs, absErr := filepath.Abs(runner); absErr == nil {
+			return abs, nil
+		}
+		return runner, nil
+	}
+
+	fmt.Printf("\n📦 Preparing llama.cpp runtime (%s)...\n", pkg.label)
+	archivePath := filepath.Join(modelDirectory, pkg.archiveName)
+	if _, err := os.Stat(archivePath); os.IsNotExist(err) {
+		if _, err := downloadToFile(pkg.url, archivePath, 0644); err != nil {
+			return "", fmt.Errorf("failed to download runtime archive: %w", err)
+		}
+	}
+
+	if err := os.RemoveAll(extractDir); err != nil {
+		return "", fmt.Errorf("failed to reset runtime directory: %w", err)
+	}
+
+	if err := unzipArchive(archivePath, extractDir); err != nil {
+		return "", fmt.Errorf("failed to extract runtime archive: %w", err)
+	}
+
+	runner, err := findRunnerBinary(extractDir)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("✅ llama.cpp runtime ready.\n")
+	if abs, absErr := filepath.Abs(runner); absErr == nil {
+		return abs, nil
+	}
+	return runner, nil
+}
+
+func unzipArchive(archivePath, destDir string) error {
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	for _, file := range reader.File {
+		cleanPath, err := sanitizeExtractPath(destDir, file.Name)
+		if err != nil {
+			return err
+		}
+
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(cleanPath, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(cleanPath), 0755); err != nil {
+			return err
+		}
+
+		src, err := file.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(cleanPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.Mode())
+		if err != nil {
+			_ = src.Close()
+			return err
+		}
+		if _, err := io.Copy(out, src); err != nil {
+			_ = src.Close()
+			_ = out.Close()
+			return err
+		}
+		_ = src.Close()
+		_ = out.Close()
+	}
+
+	return nil
+}
+
+var errRunnerLocated = errors.New("runner located")
+
+func findRunnerBinary(root string) (string, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("runtime path %s is not a directory", root)
+	}
+
+	var runner string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() != "run" {
+			return nil
+		}
+		if err := os.Chmod(path, 0755); err != nil && !errors.Is(err, os.ErrPermission) {
+			return err
+		}
+		if isExecutable(path) {
+			runner = path
+			return errRunnerLocated
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errRunnerLocated) {
+		return "", err
+	}
+	if runner == "" {
+		return "", fmt.Errorf("no executable 'run' found under %s", root)
+	}
+	return runner, nil
+}
+
+func sanitizeExtractPath(destination, filePath string) (string, error) {
+	destination = filepath.Clean(destination)
+	targetPath := filepath.Join(destination, filePath)
+	if !strings.HasPrefix(filepath.Clean(targetPath), destination+string(os.PathSeparator)) && filepath.Clean(targetPath) != destination {
+		return "", fmt.Errorf("illegal file path %s", filePath)
+	}
+	return filepath.Clean(targetPath), nil
+}
+
+func downloadToFile(url, destination string, perm os.FileMode) (int64, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("unexpected status %s", resp.Status)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+		return 0, err
+	}
+
+	tmpPath := destination + ".download"
+	out, err := os.Create(tmpPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = out.Close()
+	}()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, err
+	}
+
+	if err := out.Sync(); err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, err
+	}
+
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, err
+	}
+
+	if err := os.Rename(tmpPath, destination); err != nil {
+		_ = os.Remove(tmpPath)
+		return 0, err
+	}
+
+	if perm != 0 {
+		if err := os.Chmod(destination, perm); err != nil {
+			return 0, err
+		}
+	}
+
+	return written, nil
 }
 
 func cleanModelOutput(output, objectName string) string {

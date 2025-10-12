@@ -1,3 +1,5 @@
 *gguf
 dist/
 .cache/
+k/llamacpp-*.zip
+k/runtime/

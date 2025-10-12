@@ -17,6 +17,7 @@ MakeMe is a CLI application that transforms natural language descriptions into b
 - **Go** (1.19 or later)
 - **Rust** toolchain (cargo) to build the bundled Terminal3d viewer
 - **OpenSCAD** - Install via `brew install openscad`
+- **One-time internet** - The first run downloads the default `k-1b-q8_0.gguf` model and a llama.cpp runtime bundle if missing
 
 ## 🚀 Quick Start
 
@@ -42,6 +43,10 @@ go build -o stl2obj stl2obj.go stl.go
 ```
 
 Set `MAKEME_T3D` if you want to point the viewer to a custom `t3d` location; otherwise the app uses the bundled binary.
+
+The first launch fetches `k/k-1b-q8_0.gguf` from Hugging Face and a llama.cpp runtime bundle (extracted under `k/runtime/<platform>/`) when either file is absent, so expect a short download.
+
+Override the runner location with `MAKEME_RUN=/path/to/run` (the alias `MAKEME_LLAMAFILE` is still honoured for compatibility).
 
 ### Use a Packaged Release
 
@@ -81,7 +86,7 @@ MakeMe/
 ├── stl2obj.go           # STL to OBJ converter
 ├── k/                   # AI model directory
 │   ├── k-1b-q8_0.gguf  # Quantized AI model
-│   └── run             # Model runner binary
+│   └── runtime/        # Downloaded llama.cpp bundles (e.g., runtime/darwin-arm64/run)
 └── deps/terminal3d/     # 3D terminal viewer (source)
 ```
 
@@ -113,8 +118,8 @@ The application uses high-resolution settings by default:
 ## 🐛 Troubleshooting
 
 ### Model doesn't load
-- Ensure the `k/` directory contains `k-1b-q8_0.gguf` and `run` binary
-- Check that the `run` binary has execute permissions: `chmod +x k/run`
+- Ensure the `k/` directory contains `k-1b-q8_0.gguf` and a llama.cpp runner (e.g., `k/runtime/darwin-arm64/run`)
+- Check that the `run` binary has execute permissions: `chmod +x k/runtime/<platform>/run`
 
 ### OpenSCAD errors
 - Verify OpenSCAD is installed: `openscad --version`
@@ -141,7 +146,11 @@ scripts/package.sh
 scripts/package.sh darwin-arm64
 ```
 
-Artifacts are written to `dist/`. At runtime MakeMe automatically looks for a `t3d` binary next to the executable, inside `deps/terminal3d/target/release/`, or anywhere on `PATH`. Set `MAKEME_T3D=/custom/path/to/t3d` to point to an alternative viewer if needed.
+Artifacts are written to `dist/`. At runtime MakeMe automatically looks for a `t3d` binary next to the executable, inside `deps/terminal3d/target/release/`, or anywhere on `PATH`. Set `MAKEME_T3D=/custom/path/to/t3d` to point to an alternative viewer if needed. The packaging script also fetches and unpacks the llama.cpp runtime bundle for supported targets when it is not already cached under `k/`.
+
+The GGUF model is not bundled inside the archives; if `k/k-1b-q8_0.gguf` is missing the application downloads it from Hugging Face on demand.
+
+Each archive ships with the matching llama.cpp runtime under `k/runtime/<platform>/` and a convenience copy at `k/run`. Point `MAKEME_RUN` (or `MAKEME_LLAMAFILE`) to a custom build if you need special hardware acceleration.
 
 ## 🤝 Contributing
 
