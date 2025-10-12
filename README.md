@@ -162,6 +162,30 @@ scripts/package.sh
 scripts/package.sh darwin-arm64
 ```
 
+### Debian / Ubuntu (`.deb`)
+
+When you target Linux and have `dpkg-deb` available the packaging script now produces a `.deb` alongside the tarball:
+
+```
+scripts/package.sh linux-amd64
+# => dist/makeme_<version>_amd64.deb
+```
+
+Publish the `.deb` through an apt repository (e.g. `reprepro`, `aptly`, Cloudsmith). Users add your repo, run `apt update`, and install with `sudo apt install makeme`. The package installs the full bundle under `/opt/makeme` and adds wrappers in `/usr/bin` so binaries still find their relative assets.
+
+### Homebrew (macOS)
+
+Turn the generated tarballs into a tap formula with:
+
+```
+scripts/package.sh darwin-arm64
+scripts/package.sh darwin-amd64   # optional if you ship Intel builds
+scripts/generate-homebrew-formula.sh
+# => packaging/homebrew/makeme.rb
+```
+
+Commit the formula to your tap (`homebrew-makeme`, for example) and push. Homebrew installs into `libexec` and adds shims that change into that directory before launching, keeping the bundled viewer and llama.cpp runtime reachable.
+
 Artifacts are written to `dist/`. At runtime MakeMe automatically looks for a `t3d` binary next to the executable, inside `deps/terminal3d/target/release/`, or anywhere on `PATH`. Set `MAKEME_T3D=/custom/path/to/t3d` to point to an alternative viewer if needed. The packaging script also fetches and unpacks the llama.cpp runtime bundle for supported targets when it is not already cached under `k/`.
 
 The GGUF model is not bundled inside the archives; if `k/k-1b-q8_0.gguf` is missing the application downloads it from Hugging Face on demand.

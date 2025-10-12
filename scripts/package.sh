@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
+VERSION="${VERSION:-}"
 GO_CACHE_DIR="${GO_CACHE_DIR:-$ROOT_DIR/.cache/go-build}"
 mkdir -p "$GO_CACHE_DIR"
 export GOCACHE="$GO_CACHE_DIR"
@@ -101,6 +102,16 @@ PACKAGE_DIR="$DIST_DIR/$PACKAGE_BASENAME"
 rm -rf "$PACKAGE_DIR"
 mkdir -p "$PACKAGE_DIR"
 
+if [[ -z "$VERSION" ]]; then
+  if VERSION=$(git -C "$ROOT_DIR" describe --tags --always --dirty 2>/dev/null); then
+    VERSION="${VERSION#v}"
+  else
+    VERSION="0.0.0"
+  fi
+fi
+
+VERSION="${VERSION%-dirty}"
+
 BIN_EXT=""
 if [[ "$GOOS" == "windows" ]]; then
   BIN_EXT=".exe"
@@ -183,3 +194,94 @@ else
   )
   echo "Created $ARCHIVE_PATH"
 fi
+
+maybe_build_deb() {
+  local goarch="$1"
+  local pkg_dir="$2"
+
+  if [[ "$GOOS" != "linux" ]]; then
+    return
+  fi
+
+  if ! command -v dpkg-deb >/dev/null 2>&1; then
+    echo "dpkg-deb not found; skipping .deb creation." >&2
+    return
+  fi
+
+  local deb_arch
+  case "$goarch" in
+    amd64) deb_arch="amd64" ;;
+    arm64) deb_arch="arm64" ;;
+    arm)   deb_arch="armhf" ;;
+    *)
+      echo "Unsupported GOARCH '$goarch' for Debian package; skipping." >&2
+      return
+      ;;
+  esac
+
+  local stage_dir
+  stage_dir="$(mktemp -d "$DIST_DIR/makeme-deb.XXXXXX")"
+  trap 'rm -rf "$stage_dir"' EXIT
+
+  local install_prefix="$stage_dir/opt/makeme"
+  mkdir -p "$install_prefix"
+  cp -R "$pkg_dir"/. "$install_prefix"
+
+  mkdir -p "$stage_dir/usr/bin"
+  cat >"$stage_dir/usr/bin/makeme" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="/opt/makeme"
+cd "$APP_DIR"
+exec "$APP_DIR/makeme" "$@"
+EOF
+  chmod 0755 "$stage_dir/usr/bin/makeme"
+
+  if [[ -f "$install_prefix/stl2obj" ]]; then
+    cat >"$stage_dir/usr/bin/stl2obj" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="/opt/makeme"
+exec "$APP_DIR/stl2obj" "$@"
+EOF
+    chmod 0755 "$stage_dir/usr/bin/stl2obj"
+  fi
+
+  if [[ -f "$install_prefix/t3d" ]]; then
+    cat >"$stage_dir/usr/bin/t3d" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="/opt/makeme"
+exec "$APP_DIR/t3d" "$@"
+EOF
+    chmod 0755 "$stage_dir/usr/bin/t3d"
+  fi
+
+  local debian_dir="$stage_dir/DEBIAN"
+  mkdir -p "$debian_dir"
+
+  local installed_size
+  installed_size=$(du -sk "$stage_dir/opt/makeme" | awk '{print $1}')
+
+  cat >"$debian_dir/control" <<EOF
+Package: makeme
+Version: $VERSION
+Section: utils
+Priority: optional
+Architecture: $deb_arch
+Maintainer: MakeMe Developers <support@makeme.local>
+Depends: libc6, libstdc++6, bash
+Installed-Size: $installed_size
+Description: AI-powered 3D object generator CLI
+ MakeMe turns natural language prompts into rendered 3D models using OpenSCAD.
+EOF
+
+  local deb_path="$DIST_DIR/makeme_${VERSION}_${deb_arch}.deb"
+  dpkg-deb --build "$stage_dir" "$deb_path"
+  echo "Created $deb_path"
+
+  rm -rf "$stage_dir"
+  trap - EXIT
+}
+
+maybe_build_deb "$GOARCH" "$PACKAGE_DIR"
