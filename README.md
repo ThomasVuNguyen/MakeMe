@@ -36,6 +36,22 @@ go build -o makeme main.go stl.go
 go build -o stl2obj stl2obj.go stl.go
 ```
 
+### Install OpenSCAD (required)
+
+```bash
+# macOS (Homebrew)
+brew install --cask openscad
+
+# Debian/Ubuntu
+sudo apt-get install openscad
+
+# Arch Linux
+sudo pacman -S openscad
+
+# Windows / other platforms
+# Download the installer from https://openscad.org/downloads.html
+```
+
 ### Run the CLI
 
 ```bash
