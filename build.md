@@ -20,6 +20,7 @@ GOOS=linux GOARCH=amd64 scripts/package.sh linux-amd64 && \
 
 ```bash
 # One-time toolchain prep
+brew install rustup
 rustup target add aarch64-unknown-linux-gnu
 sudo apt install gcc-aarch64-linux-gnu
 export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
@@ -48,6 +49,8 @@ Long term, publishing via an apt repository gives users `apt install makeme`; ot
 ### Publish Linux artifacts to GitHub Releases
 
 ```bash
+brew install gh
+gh auth login
 export VERSION=1.0.0               # adjust per release
 export RELEASE_TAG="v$VERSION"
 
