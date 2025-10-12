@@ -2,10 +2,11 @@
 
 Quick commands to produce release artifacts for Linux and macOS. Run everything from the repo root.
 
-## Linux
+## Linux Build & Release (run on the Linux build machine)
+
+### Build linux/amd64
 
 ```bash
-# Build tarball + .deb for linux/amd64 (requires Go, Rust, curl, unzip, dpkg-deb)
 GOOS=linux GOARCH=amd64 scripts/package.sh linux-amd64
 
 # Outputs:
@@ -13,8 +14,17 @@ GOOS=linux GOARCH=amd64 scripts/package.sh linux-amd64
 #   dist/makeme_<version>_amd64.deb
 ```
 
+### Build linux/arm64 (Raspberry Pi)
+
 ```bash
-# Build for linux/arm64
+# One-time toolchain prep
+rustup target add aarch64-unknown-linux-gnu
+sudo apt install gcc-aarch64-linux-gnu
+export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+
+# Build
 GOOS=linux GOARCH=arm64 scripts/package.sh linux-arm64
 
 # Outputs:
@@ -22,9 +32,34 @@ GOOS=linux GOARCH=arm64 scripts/package.sh linux-arm64
 #   dist/makeme_<version>_arm64.deb
 ```
 
-Ship the `.deb` through your apt repository so users can `sudo apt update && sudo apt install makeme`. If you distribute the tarball directly, tell users to extract it and run the bundled binary: `tar -xzf makeme-linux-<arch>.tar.gz && cd makeme-linux-<arch> && ./makeme`.
+If you want to sanity-check the packages on the build box, install with:
 
-## macOS
+```bash
+sudo dpkg -i dist/makeme_*_amd64.deb   # swap to arm64 deb when testing Pi builds
+sudo apt-get install -f                # only if dpkg reports missing dependencies
+```
+
+Long term, publishing via an apt repository gives users `apt install makeme`; otherwise point them at the manual `.deb` or tarball install instructions in `README.md`.
+
+### Publish Linux artifacts to GitHub Releases
+
+```bash
+export VERSION=1.0.0               # adjust per release
+export RELEASE_TAG="v$VERSION"
+
+# Attach Linux artifacts to the release created from macOS
+gh release upload "$RELEASE_TAG" \
+  dist/makeme-linux-amd64.tar.gz \
+  dist/makeme-linux-arm64.tar.gz \
+  dist/makeme_*_amd64.deb \
+  dist/makeme_*_arm64.deb \
+  --clobber
+
+# If the release doesn’t exist yet, include the mac tarballs here too:
+# gh release create "$RELEASE_TAG" dist/makeme-* --title "MakeMe $VERSION" --notes "Release $VERSION"
+```
+
+## macOS Build & Release (run on the macOS build machine)
 
 ```bash
 # Apple Silicon archive
@@ -58,8 +93,11 @@ git push origin "v$VERSION"
 
 # Publish the GitHub release with the macOS tarball(s)
 # (requires gh CLI; edit the command or use the web UI if you prefer)
-gh release create "v$VERSION" dist/makeme-darwin-arm64.tar.gz \
-  --title "MakeMe $VERSION" --notes "Release $VERSION"
+gh release create "v$VERSION" \
+  dist/makeme-darwin-arm64.tar.gz \
+  dist/makeme-darwin-amd64.tar.gz \
+  --title "MakeMe $VERSION" \
+  --notes "Release $VERSION"
 
 # Update your Homebrew tap (set HOMEBREW_TAP_ORG + HOMEBREW_TAP_DIR)
 export HOMEBREW_TAP_ORG=ThomasVuNguyen

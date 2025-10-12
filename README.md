@@ -24,10 +24,20 @@ MakeMe is a CLI application that transforms natural language descriptions into b
 ### macOS (Homebrew)
 
 ```bash
-brew install --cask openscad
 brew tap ThomasVuNguyen/makeme
 brew install makeme
 makeme
+```
+
+### Linux (.deb from GitHub)
+
+```bash
+# Example (amd64)
+wget https://github.com/ThomasVuNguyen/MakeMe/releases/download/v1.0.0/makeme_1.0.0-3-gb50c8cf_amd64.deb
+sudo dpkg -i makeme_1.0.0-3-gb50c8cf_amd64.deb
+sudo apt-get install -f   # only if dpkg reports missing dependencies
+
+# Raspberry Pi / arm64: download the arm64 .deb from the same release and install with dpkg.
 ```
 
 ### Install OpenSCAD (required)
@@ -62,7 +72,7 @@ The first launch fetches `k/k-1b-q8_0.gguf` from Hugging Face and a llama.cpp ru
 
 Override the runner location with `MAKEME_RUN=/path/to/run` (the alias `MAKEME_LLAMAFILE` is still honoured for compatibility).
 
-### Use a Packaged Release
+### Manual Tarball Install (any platform)
 
 ```bash
 # Download the appropriate archive (e.g., makeme-darwin-arm64.tar.gz)
