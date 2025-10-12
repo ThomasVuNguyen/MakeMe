@@ -79,6 +79,12 @@ case "${GOOS}-${GOARCH}" in
     RUNNER_SUBDIR="runtime/rpi5"
     RUNNER_LABEL="Raspberry Pi 5"
     ;;
+  linux-amd64)
+    RUNNER_ARCHIVE="llamacpp-linux-amd64.zip"
+    RUNNER_URL="https://huggingface.co/ThomasTheMaker/llamacpp/resolve/main/makeme-linux-x86.zip"
+    RUNNER_SUBDIR="runtime/linux-amd64"
+    RUNNER_LABEL="Linux amd64"
+    ;;
 esac
 
 if [[ -z "$RUST_TARGET" ]]; then
