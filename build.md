@@ -7,11 +7,13 @@ Quick commands to produce release artifacts for Linux and macOS. Run everything 
 ### Build linux/amd64
 
 ```bash
-GOOS=linux GOARCH=amd64 scripts/package.sh linux-amd64
+GOOS=linux GOARCH=amd64 scripts/package.sh linux-amd64 && \
+  latest_deb=$(ls -t dist/makeme_*_amd64.deb | head -n1) && \
+  mv "$latest_deb" dist/makeme-linux-x86.deb
 
 # Outputs:
 #   dist/makeme-linux-amd64.tar.gz
-#   dist/makeme_<version>_amd64.deb
+#   dist/makeme-linux-x86.deb
 ```
 
 ### Build linux/arm64 (Raspberry Pi)
@@ -25,17 +27,19 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
 
 # Build
-GOOS=linux GOARCH=arm64 scripts/package.sh linux-arm64
+GOOS=linux GOARCH=arm64 scripts/package.sh linux-arm64 && \
+  latest_deb=$(ls -t dist/makeme_*_arm64.deb | head -n1) && \
+  mv "$latest_deb" dist/makeme-linux-arm64.deb
 
 # Outputs:
 #   dist/makeme-linux-arm64.tar.gz
-#   dist/makeme_<version>_arm64.deb
+#   dist/makeme-linux-arm64.deb
 ```
 
 If you want to sanity-check the packages on the build box, install with:
 
 ```bash
-sudo dpkg -i dist/makeme_*_amd64.deb   # swap to arm64 deb when testing Pi builds
+sudo dpkg -i dist/makeme-linux-x86.deb   # swap to arm64 deb when testing Pi builds
 sudo apt-get install -f                # only if dpkg reports missing dependencies
 ```
 
@@ -51,8 +55,8 @@ export RELEASE_TAG="v$VERSION"
 gh release upload "$RELEASE_TAG" \
   dist/makeme-linux-amd64.tar.gz \
   dist/makeme-linux-arm64.tar.gz \
-  dist/makeme_*_amd64.deb \
-  dist/makeme_*_arm64.deb \
+  dist/makeme-linux-x86.deb \
+  dist/makeme-linux-arm64.deb \
   --clobber
 
 # If the release doesn’t exist yet, include the mac tarballs here too:
