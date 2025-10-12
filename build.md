@@ -22,6 +22,8 @@ GOOS=linux GOARCH=arm64 scripts/package.sh linux-arm64
 #   dist/makeme_<version>_arm64.deb
 ```
 
+Ship the `.deb` through your apt repository so users can `sudo apt update && sudo apt install makeme`. If you distribute the tarball directly, tell users to extract it and run the bundled binary: `tar -xzf makeme-linux-<arch>.tar.gz && cd makeme-linux-<arch> && ./makeme`.
+
 ## macOS
 
 ```bash

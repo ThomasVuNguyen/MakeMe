@@ -21,19 +21,13 @@ MakeMe is a CLI application that transforms natural language descriptions into b
 
 ## 🚀 Quick Start
 
-### Build from Source
+### macOS (Homebrew)
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd MakeMe
-
-# Build the bundled terminal3d viewer (once per target)
-cargo build --release --manifest-path deps/terminal3d/Cargo.toml
-
-# Build the primary binaries
-go build -o makeme main.go stl.go
-go build -o stl2obj stl2obj.go stl.go
+brew install --cask openscad
+brew tap ThomasVuNguyen/makeme
+brew install makeme
+makeme
 ```
 
 ### Install OpenSCAD (required)
@@ -55,6 +49,10 @@ sudo pacman -S openscad
 ### Run the CLI
 
 ```bash
+# Homebrew or PATH installs
+makeme
+
+# Extracted archive or local build
 ./makeme
 ```
 
@@ -191,6 +189,23 @@ Artifacts are written to `dist/`. At runtime MakeMe automatically looks for a `t
 The GGUF model is not bundled inside the archives; if `k/k-1b-q8_0.gguf` is missing the application downloads it from Hugging Face on demand.
 
 Each archive ships with the matching llama.cpp runtime under `k/runtime/<platform>/` and a convenience copy at `k/run`. Point `MAKEME_RUN` (or `MAKEME_LLAMAFILE`) to a custom build if you need special hardware acceleration.
+
+## 🔨 Optional: Build from Source
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd MakeMe
+
+# Build the bundled terminal3d viewer (once per target)
+cargo build --release --manifest-path deps/terminal3d/Cargo.toml
+
+# Build the primary binaries
+go build -o makeme main.go stl.go
+go build -o stl2obj stl2obj.go stl.go
+```
+
+Use this path if you want to hack on the codebase or build for a platform without published release artifacts.
 
 ## 🤝 Contributing
 
