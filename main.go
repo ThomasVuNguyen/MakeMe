@@ -21,20 +21,30 @@ import (
 type state int
 
 const (
-	stateInput state = iota
+	stateIntro state = iota
+	stateInput
 	stateGenerating
-	stateConverting
+	stateViewer
 )
 
 type model struct {
 	state          state
 	textInput      textinput.Model
 	selectedObject string
+	generatedObj   string
+	viewerChoice   viewerOption
 	width          int
 	height         int
 	generatingMsg  string
 	err            error
 }
+
+type viewerOption int
+
+const (
+	viewerOptionRegenerate viewerOption = iota
+	viewerOptionNew
+)
 
 const (
 	terminal3dEnvOverride = "MAKEME_T3D"
@@ -49,9 +59,16 @@ var (
 			Foreground(lipgloss.Color("#FF79C6")).
 			MarginBottom(1)
 
-	promptStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#8BE9FD")).
+	introTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FF79C6")).
+			Background(lipgloss.Color("#282A36")).
+			Padding(1, 4).
 			MarginBottom(1)
+
+	introSubtitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8BE9FD")).
+				MarginBottom(2)
 
 	inputStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -64,20 +81,20 @@ var (
 			BorderForeground(lipgloss.Color("#50FA7B")).
 			Padding(2).
 			MarginTop(1).
-			MarginBottom(1).
+			MarginBottom(2).
 			Align(lipgloss.Center)
 
 	buttonStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("#44475A")).
 			Foreground(lipgloss.Color("#F8F8F2")).
-			Padding(0, 2).
-			Margin(0, 1)
+			Padding(0, 3).
+			Margin(0, 2)
 
 	activeButtonStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#FF79C6")).
 				Foreground(lipgloss.Color("#282A36")).
-				Padding(0, 2).
-				Margin(0, 1).
+				Padding(0, 3).
+				Margin(0, 2).
 				Bold(true)
 
 	helpStyle = lipgloss.NewStyle().
@@ -114,13 +131,14 @@ var runnerOverrideEnvVars = []string{"MAKEME_RUN", "MAKEME_LLAMAFILE"}
 func initialModel() model {
 	ti := textinput.New()
 	ti.Placeholder = "a cat, a box, a house, a cake..."
-	ti.Focus()
 	ti.CharLimit = 50
 	ti.Width = 46
+	ti.Blur()
 
 	return model{
-		state:     stateInput,
-		textInput: ti,
+		state:        stateIntro,
+		textInput:    ti,
+		viewerChoice: viewerOptionRegenerate,
 	}
 }
 
@@ -139,42 +157,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 			m.state = stateInput
-			m.textInput.Focus()
-			return m, textinput.Blink
+			focus := m.textInput.Focus()
+			return m, tea.Batch(focus, textinput.Blink)
 		}
 
-		t3dPath, err := findTerminal3DExecutable()
-		if err != nil {
-			m.err = err
-			m.state = stateInput
-			m.textInput.Focus()
-			return m, textinput.Blink
+		m.err = nil
+		m.generatedObj = msg.stlPath
+		m.state = stateViewer
+		m.viewerChoice = viewerOptionRegenerate
+		m.generatingMsg = ""
+		return m, nil
+
+	case viewerLaunchResultMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
 		}
-
-		// Display OBJ file using terminal3d
-		// Exit the current app and launch terminal3d directly
-		fmt.Printf("\n🎯 Opening 3D model: %s\n", msg.stlPath)
-		fmt.Printf("Press Ctrl+C to return when done viewing.\n\n")
-
-		cmd := exec.Command(t3dPath, msg.stlPath)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Error launching terminal3d: %v\n", err)
-		}
-
-		fmt.Printf("\nReturning to MakeMe...\n")
-		return m, tea.Quit
-
-		// Return to input for next generation
-		m.state = stateInput
-		m.textInput.Focus()
-		return m, textinput.Blink
+		m.err = nil
+		return m, tea.ClearScreen
 
 	case tea.KeyMsg:
 		switch m.state {
+		case stateIntro:
+			switch msg.String() {
+			case "enter":
+				m.state = stateInput
+				m.err = nil
+				focus := m.textInput.Focus()
+				return m, tea.Batch(focus, textinput.Blink)
+			case "ctrl+c", "esc":
+				return m, tea.Quit
+			}
 		case stateInput:
 			switch msg.Type {
 			case tea.KeyEnter:
@@ -197,8 +210,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 
-		case stateConverting:
+		case stateViewer:
 			switch msg.String() {
+			case "left", "shift+tab":
+				m.viewerChoice = viewerOptionRegenerate
+			case "right", "tab":
+				m.viewerChoice = viewerOptionNew
+			case "r":
+				return m.triggerRegeneration()
+			case "n":
+				return m.returnToInput()
+			case "enter":
+				if m.viewerChoice == viewerOptionRegenerate {
+					return m.triggerRegeneration()
+				}
+				return m.returnToInput()
+			case "v":
+				return m.launchViewer()
 			case "ctrl+c", "esc":
 				return m, tea.Quit
 			}
@@ -214,49 +242,121 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) triggerRegeneration() (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.selectedObject) == "" {
+		return *m, nil
+	}
+
+	m.state = stateGenerating
+	m.generatingMsg = "Regenerating " + m.selectedObject + "..."
+	m.err = nil
+	m.generatedObj = ""
+
+	return *m, generateObjectCmd(m.selectedObject)
+}
+
+func (m *model) returnToInput() (tea.Model, tea.Cmd) {
+	m.state = stateInput
+	m.err = nil
+	m.generatedObj = ""
+	m.selectedObject = ""
+	m.viewerChoice = viewerOptionRegenerate
+	m.textInput.Reset()
+	focus := m.textInput.Focus()
+
+	return *m, tea.Batch(focus, textinput.Blink)
+}
+
+func (m *model) launchViewer() (tea.Model, tea.Cmd) {
+	if m.generatedObj == "" {
+		return *m, nil
+	}
+	m.err = nil
+
+	return *m, launchViewerCmd(m.generatedObj)
+}
+
 func (m model) View() string {
-	var s strings.Builder
+	var content strings.Builder
 
-	s.WriteString(titleStyle.Render("🎨 MakeMe - 3D Object Creator") + "\n\n")
+	switch m.state {
+	case stateIntro:
+		content.WriteString(introTitleStyle.Render("MakeMe") + "\n")
+		content.WriteString(introSubtitleStyle.Render("by Comfy Studio") + "\n\n")
+		content.WriteString(activeButtonStyle.Render(" Enter to begin ") + "\n")
+		content.WriteString(helpStyle.Render("Press Enter to start • Esc to quit"))
 
-	// Display error if any
+	case stateInput:
+		content.WriteString(titleStyle.Render("Type in any object") + "\n\n")
+		content.WriteString(inputStyle.Render(m.textInput.View()) + "\n\n")
+		content.WriteString(helpStyle.Render("Press Enter to generate • Esc to quit"))
+
+	case stateGenerating:
+		message := m.generatingMsg
+		if message == "" {
+			message = "Generating your idea..."
+		}
+		content.WriteString(titleStyle.Render(message) + "\n\n")
+		content.WriteString(objectStyle.Width(60).Height(10).Render("\n\n⚙️  Crafting your object...\n\nThis may take a moment.") + "\n")
+		content.WriteString(helpStyle.Render("Sit tight or press Ctrl+C to quit"))
+
+	case stateViewer:
+		objectName := m.selectedObject
+		if objectName == "" {
+			objectName = "your object"
+		}
+		title := fmt.Sprintf("does this look like %s?", objectName)
+		content.WriteString(titleStyle.Render(title) + "\n\n")
+
+		var viewerInfo strings.Builder
+		viewerInfo.WriteString("🌀 3D preview ready!\n\n")
+		viewerInfo.WriteString("Press v to open the interactive viewer.\n")
+		if m.generatedObj != "" {
+			viewerInfo.WriteString("Saved as: " + filepath.Base(m.generatedObj) + "\n")
+		}
+		content.WriteString(objectStyle.Width(60).Height(12).Render(viewerInfo.String()) + "\n")
+
+		buttons := []string{
+			renderButton("Regenerate", m.viewerChoice == viewerOptionRegenerate),
+			renderButton("Create something new", m.viewerChoice == viewerOptionNew),
+		}
+		content.WriteString(lipgloss.JoinHorizontal(lipgloss.Center, buttons...) + "\n")
+		content.WriteString(helpStyle.Render("Use ←/→ to choose • Enter to confirm • Press v to view"))
+	}
+
+	var output strings.Builder
 	if m.err != nil {
 		errorStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FF5555")).
 			Bold(true)
-		s.WriteString(errorStyle.Render("Error: "+m.err.Error()) + "\n\n")
+		output.WriteString(errorStyle.Render("Error: "+m.err.Error()) + "\n\n")
 	}
 
-	switch m.state {
-	case stateInput:
-		s.WriteString(promptStyle.Render("What would you like me to make?") + "\n")
-		s.WriteString(helpStyle.Render("Try: a cat, a box, a house, a cake, or anything else!") + "\n\n")
-		s.WriteString(inputStyle.Render(m.textInput.View()) + "\n\n")
-		s.WriteString(helpStyle.Render("Press Enter to generate • Esc to quit"))
-
-	case stateGenerating:
-		s.WriteString(promptStyle.Render(m.generatingMsg) + "\n\n")
-		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n⚙️  Running AI model...\n\nThis may take a moment...") + "\n")
-		s.WriteString(helpStyle.Render("Please wait..."))
-
-	case stateConverting:
-		s.WriteString(promptStyle.Render("Converting to STL...") + "\n\n")
-		s.WriteString(objectStyle.Width(60).Height(10).Render("\n\n🔧 Converting SCAD to STL...\n\nAlmost there...") + "\n")
-		s.WriteString(helpStyle.Render("Please wait..."))
-	}
+	output.WriteString(content.String())
 
 	return lipgloss.Place(
 		m.width,
 		m.height,
 		lipgloss.Center,
 		lipgloss.Center,
-		s.String(),
+		output.String(),
 	)
+}
+
+func renderButton(label string, active bool) string {
+	if active {
+		return activeButtonStyle.Render(" " + label + " ")
+	}
+	return buttonStyle.Render(" " + label + " ")
 }
 
 type generateObjectMsg struct {
 	stlPath string
 	err     error
+}
+
+type viewerLaunchResultMsg struct {
+	err error
 }
 
 func generateObjectCmd(objectName string) tea.Cmd {
@@ -330,6 +430,34 @@ func generateObjectCmd(objectName string) tea.Cmd {
 		}
 
 		return generateObjectMsg{stlPath: objPath}
+	}
+}
+
+func launchViewerCmd(objPath string) tea.Cmd {
+	if objPath == "" {
+		return nil
+	}
+
+	return func() tea.Msg {
+		t3dPath, err := findTerminal3DExecutable()
+		if err != nil {
+			return viewerLaunchResultMsg{err: err}
+		}
+
+		fmt.Printf("\n🎯 Opening 3D model: %s\n", objPath)
+		fmt.Printf("Press Ctrl+C to return when done viewing.\n\n")
+
+		cmd := exec.Command(t3dPath, objPath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return viewerLaunchResultMsg{err: fmt.Errorf("error launching terminal3d: %w", err)}
+		}
+
+		fmt.Printf("\nReturning to MakeMe...\n")
+		return viewerLaunchResultMsg{}
 	}
 }
 
